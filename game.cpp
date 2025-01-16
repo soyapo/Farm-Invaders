@@ -296,7 +296,7 @@ void CreateBarrier(int x, int y, int type){
             Barrier.ObsData[x][y].first.first = 0, Barrier.ObsData[x][y].first.second = 3,
             Barrier.ObsData[x][y].second.first = Block.Full, Barrier.ObsData[x++][y].second.second = Color.Green;
             Barrier.ObsData[x][y].first.first = 1, Barrier.ObsData[x][y].first.second = 2,
-            Barrier.ObsData[x][y].second.first = Block.Bottom, Barrier.ObsData[x][y++].second.second = Color.GreenReset;    
+            Barrier.ObsData[x][y].second.first = Block.Bottom, Barrier.ObsData[x][y++].second.second = Color.Green;    
             x -= 5;
             Barrier.ObsData[x][y].first.first = 0, Barrier.ObsData[x][y].first.second = 3,
             Barrier.ObsData[x][y].second.first = Block.Full, Barrier.ObsData[x++][y].second.second = Color.Green;
@@ -410,9 +410,18 @@ void PrintBullet(int &x, int &y){
     else{
         gotoxy(x, y--, Block.Bullet[(y % 12) / 6]);
     }
-    
-    if(Position.isRabbit[x / 7])
-        gotoxy(0, 0, to_string(x / 7));
+
+    if(y == Position.RabbitY + 2){
+        int mn = Position.RabbitX;
+        for(int i = 0, mn = Position.RabbitX; i < 8; i++, mn += 7){
+            if(x >= mn && mn <= mn + 4){
+                //explosion
+                //score
+                Position.isRabbit[i] = 0;
+                Position.isBullet = 0;
+            }
+        }
+    }
 
     if(y <= 0){
         Position.isBullet = 0;
