@@ -6,16 +6,19 @@
 #include <windows.h>
 using namespace std; //for cin and cout mainly
 typedef const string CS; //to avoid long repetitions
+
 //---structs to tidy up global variables---
-struct{
+struct Position{
     int minX, maxX;
     int heroX, heroY;
     int mouseX, mouseY;
     int bufferX, bufferY;
     int bulletX, bulletY, isBullet;
+
     clock_t lastRabbitMove = 0, lastBulletMove, lastLogoMove;
+    clock_t MissileInterval, lastMissileMove;
 } Position;
-struct{ //unicode blocks
+struct Block{ //unicode blocks
     CS Full       = "\u2588"; //Full cell
     CS Top        = "\u2580"; //Top half cell
     CS Left       = "\u258C"; //Left half cell
@@ -27,7 +30,7 @@ struct{ //unicode blocks
     CS DarkShade  = "\u2593";
     CS Bullet[2]  = {Full, LightShade};
 } Block;
-struct{
+struct Barrier{
     pair<pair<int, int>, pair<string, string>>ObsData[300][100];
     string ObsOrder[6][4] = {
         {" ", Block.LightShade, Block.DarkShade, Block.Full},
@@ -38,7 +41,7 @@ struct{
         {"", "", "", ""}
     };
 } Barrier;
-struct{ //ANSI Colors
+struct Color{ //ANSI Colors
     CS Reset        = "\033[0m"; //Default value
     CS Yellow       = "\033[38;5;226m";
     CS Black        = "\033[38;2;0;0;0m";  
@@ -63,7 +66,7 @@ struct{ //ANSI Colors
     CS NavyPink     = "\033[38;2;0;128;255;48;2;248;197;216m";
     CS PinkWhite    = "\033[38;2;248;197;216;48;2;255;255;255m";
 } Color;
-struct{//character maps
+struct Heros{//character maps
     const pair<string, string> Hero[6][7] = { //main character (intended to resemble a duck =D)
         {{" ", Color.Reset},        {Block.Bottom, Color.Black}, {Block.Bottom, Color.Yellow}, {Block.Bottom, Color.Yellow},       {Block.Bottom, Color.Yellow}, {Block.Bottom, Color.Black}, {" ", Color.Reset}},
         {{Block.Full, Color.Black}, {Block.Full, Color.Yellow},  {Block.Full, Color.Navy},     {Block.Full, Color.Yellow},         {Block.Full, Color.Navy},     {Block.Full, Color.Yellow},  {Block.Full, Color.Black},},
@@ -91,11 +94,14 @@ struct{//character maps
         {{" ", Color.Reset}, {" ", Color.Reset}, {" ", Color.Reset}, {" ", Color.Reset}, {" ", Color.Reset}}
     };
 } Heros;
-struct{
-    int RabbitX, RabbitY, RabDir;
-    pair <int, int> RabGrid[300][100];
-    int isRabbit[8];
-} Enemy;
+struct Enemy{
+    int X, Y, Dir, XP;
+    pair <int, int> Grid[300][100];
+    int Exist[8];
+};
+
+//---Globals---
+Enemy Rabbit, Chicken;
 
 //---Functions---
 void Game();
@@ -119,7 +125,9 @@ void MainMenu();
 void firstText();
 void printLogo(int, int, int);
 void printButton(int, int, int, string, string, string);
+
 //---------------------------------------------//
+
 int main(){
     char c = getch();
     MainMenu();
@@ -127,13 +135,16 @@ int main(){
     //Game();
     return 0;
 }
+
+//---------------------------------------------//
+
 void Game(){
     InitGame();
     while(true){
         if(_kbhit()){
             char c = getch();
             if(c == 'p')
-                break;
+                exit(0);
             else if(c == 'a'){
                 Position.heroX = max(Position.minX, Position.heroX - 1);
                 gotoxy(Position.heroX, Position.heroY);
@@ -161,6 +172,8 @@ void Game(){
             Position.lastRabbitMove = clock();
             gotoxy(Position.heroX, Position.heroY);
         }
+
+        //if(clock() - )
     }
 }
 void InitMain(){
@@ -173,17 +186,18 @@ void InitMain(){
     Position.maxX = (Position.bufferX - 70) / 2 + 70;
 }
 void InitGame(){
+
     Position.heroX   = Position.minX + 31, Position.heroY = Position.bufferY - 7;
     Position.bulletX = 0 , Position.bulletY = 0, Position.isBullet = 0;
     //initial position of the leftmost rabbit, directed to move east
-    Enemy.RabbitX = Position.minX, Enemy.RabbitY = 0, Enemy.RabDir = 1;
+    Rabbit.X = Position.minX, Rabbit.Y = 0, Rabbit.Dir = 1;
 
     for(int i = 0; i < 8; i++){
-        Enemy.isRabbit[i] = 1;
+        Rabbit.Exist[i] = 1;
         for(int x = 7 * i; x < 7 * i + 5; x++)
             for(int y = 0; y < 3; y++)
-                Enemy.RabGrid[x + Enemy.RabbitX][y].first = 1, 
-                Enemy.RabGrid[x + Enemy.RabbitX][y].second = i;
+                Rabbit.Grid[x + Rabbit.X][y].first = 1, 
+                Rabbit.Grid[x + Rabbit.X][y].second = i;
     }
 
     PrintDecor();
@@ -412,48 +426,50 @@ void PrintHero(const pair<string, string> (&Hero)[Rows][Cols], int row, int col,
 }
 void PrintRabbit(){
     //zeroing previous cells
-    for(int i = Enemy.RabbitY; i < Enemy.RabbitY + 3; i++){
-        if(Enemy.RabDir > 0)
-            for(int x = 0, j = Enemy.RabbitX; x < 8; x++, j += 7)
-                Enemy.RabGrid[j][i].first = 0,
-                Enemy.RabGrid[j][i].second = 0;
+    for(int i = Rabbit.Y; i < Rabbit.Y + 3; i++){
+        if(Rabbit.Dir > 0)
+            for(int x = 0, j = Rabbit.X; x < 8; x++, j += 7)
+                Rabbit.Grid[j][i].first = 0,
+                Rabbit.Grid[j][i].second = 0;
         else
-            for(int x = 0, j = Enemy.RabbitX + 53; x < 8; x++, j -= 7)
-                Enemy.RabGrid[j][i].first = 0,
-                Enemy.RabGrid[j][i].second = 0;
+            for(int x = 0, j = Rabbit.X + 53; x < 8; x++, j -= 7)
+                Rabbit.Grid[j][i].first = 0,
+                Rabbit.Grid[j][i].second = 0;
     }
 
     //direction inversion
-    if((Enemy.RabDir == 1 && Enemy.RabbitX == Position.minX + 15) || (Enemy.RabDir == -1 && Enemy.RabbitX == Position.minX)){
-        for(int i = Enemy.RabbitY; i < Enemy.RabbitY + 2; i++){
+    if((Rabbit.Dir == 1 && Rabbit.X == Position.minX + 15) || (Rabbit.Dir == -1 && Rabbit.X == Position.minX)){
+        for(int i = Rabbit.Y; i < Rabbit.Y + 2; i++){
             gotoxy(Position.minX, i);
             for(int j = 0; j < 70; j++)
                 cout<<' ';
         }
-        Enemy.RabbitY++, Enemy.RabDir *= -1;
+        Rabbit.Y++, Rabbit.Dir *= -1;
     }
 
-    Enemy.RabbitX += Enemy.RabDir;
+    Rabbit.X += Rabbit.Dir;
 
+    //turning new cell to 1
     for(int i = 0; i < 8; i++){
         for(int x = 7 * i; x < 7 * i + 5; x++){
-            for(int y = Enemy.RabbitY; y < Enemy.RabbitY + 3; y++){
-                Enemy.RabGrid[x + Enemy.RabbitX][y].second = i;
-                if(Enemy.isRabbit[i] == 1)
-                    Enemy.RabGrid[x + Enemy.RabbitX][y].first = 1;
+            for(int y = Rabbit.Y; y < Rabbit.Y + 3; y++){
+                Rabbit.Grid[x + Rabbit.X][y].second = i;
+                if(Rabbit.Exist[i] == 1)
+                    Rabbit.Grid[x + Rabbit.X][y].first = 1;
             }
         }
     }
+
     //printing the new cells
-    for(int i = 0, x = Enemy.RabbitX; i < 8; i++, x += 7){
-        for(int j = 0, y = Enemy.RabbitY; j < 3; j++){
+    for(int i = 0, x = Rabbit.X; i < 8; i++, x += 7){
+        for(int j = 0, y = Rabbit.Y; j < 3; j++){
             gotoxy(x, y++);
 
-            if(Enemy.isRabbit[i] == 1)
+            if(Rabbit.Exist[i] == 1)
                 for(int k = 0; k < 5; k++)
-                    cout<<Heros.Rabbit[Enemy.RabbitX % 2][j][k].second<<Heros.Rabbit[Enemy.RabbitX % 2][j][k].first;
-            else if(Enemy.isRabbit[i] < 0){
-                Enemy.isRabbit[i]--;
+                    cout<<Heros.Rabbit[Rabbit.X % 2][j][k].second<<Heros.Rabbit[Rabbit.X % 2][j][k].first;
+            else if(Rabbit.Exist[i] < 0){
+                Rabbit.Exist[i]--;
                 for(int k = 0; k < 5; k++)
                     cout<<Heros.Rabbit[2][j][k].second<<Heros.Rabbit[2][j][k].first;
             }
@@ -462,10 +478,10 @@ void PrintRabbit(){
                     cout<<Heros.Empty[j][k].second<<Heros.Empty[j][k].first;
             
             for(int k = 0; k < 5; k++)    
-                    gotoxy(x + (Enemy.RabDir > 0 ? -1 : 5), Enemy.RabbitY + k, " ");
+                    gotoxy(x + (Rabbit.Dir > 0 ? -1 : 5), Rabbit.Y + k, " ");
 
-            if(Enemy.isRabbit[i] == -3)
-                Enemy.isRabbit[i] = 0;
+            if(Rabbit.Exist[i] == -3)
+                Rabbit.Exist[i] = 0;
         }
     }
 }
@@ -486,13 +502,20 @@ void PrintBullet(int &x, int &y){
     }
 
     //enemy hit sequence
-    else if(Enemy.RabGrid[x][y].first == 1){
-        Enemy.isRabbit[Enemy.RabGrid[x][y].second] = -1, Position.isBullet = 0;
-        int left = Enemy.RabbitX + (7 * Enemy.RabGrid[x][y].second);
-        for(int j = Enemy.RabbitY; j < Enemy.RabbitY + 3; j++)
+    else if(Rabbit.Grid[x][y].first == 1){
+        Rabbit.Exist[Rabbit.Grid[x][y].second] = -1, Position.isBullet = 0;
+        int left = Rabbit.X + (7 * Rabbit.Grid[x][y].second);
+        //zero the respective elements
+        for(int j = Rabbit.Y; j < Rabbit.Y + 3; j++)
             for(int i = left; i < left + 5; i++)
-                Enemy.RabGrid[i][j].first = 0;
+                Rabbit.Grid[i][j].first = 0;
+        //print explosion sequence
         gotoxy(x, y, " ");
+        for(int j = 0, y = Rabbit.Y; j < 3; j++){
+            gotoxy(Rabbit.X + 7 * Rabbit.Grid[x][y].second, y);
+            for(int k = 0; k < 5; k++)
+                cout<<Heros.Rabbit[2][j][k].second<<Heros.Rabbit[2][j][k].first;
+        }   
     }
     else{
         gotoxy(x, y--, Block.Bullet[(y % 24) / 12]);
@@ -513,6 +536,10 @@ void PrintDecor(){
     for(int i = Position.minX; i < Position.maxX; i++)
         cout<<Block.Bottom;
     cout<<Color.Reset;
+
+    // for(int i = 0; i < Position.bufferY; i++)
+    //     for(int j = 0; j < 70; j++)
+    //         gotoxy(Position.minX + j, i, Color.BrownGreen + " ");
 }
 void MainMenu(){
     InitMain();
@@ -531,31 +558,64 @@ void MainMenu(){
     printButton(Position.minX + 28, Position.bufferY -  9, 3, Color.BlackWhite, Color.WhiteGreen, "SETTINGS");
     printButton(Position.minX + 28, Position.bufferY -  4, 5, Color.RedWhite,   Color.WhiteGreen, "EXIT");
                 
-    int index = 1;
+    int index = 1, first = 1;
     bool shart;
 
     Position.lastLogoMove = clock();
     while(true){
-        if(clock() - Position.lastLogoMove> 700){
+        if(clock() - Position.lastLogoMove> 700 || first){
             index *= -1, Position.lastLogoMove = clock();
             printLogo(Position.minX + 21, 5, index);
         }
+        first = 0;
         getMousePos(Position.mouseX, Position.mouseY);
         
         //Game
         shart = Position.mouseY <= Position.bufferY - 16 && Position.mouseY >= Position.bufferY - 18 && Position.mouseX >= Position.minX + 26 && Position.mouseX <= Position.minX + 40;
         if(!button[0] && shart){
             button[0] = 1;
-            printButton(Position.minX + 28, Position.bufferY -  17, 2, Color.WhiteBrown, Color.ChocoGreen, "START GAME");    
+            printButton(Position.minX + 28, Position.bufferY - 17, 2, Color.WhiteBrown, Color.ChocoGreen, "START GAME");    
         }
         else if(button[0] && !shart){
             button[0] = 0;
-            printButton(Position.minX + 28, Position.bufferY -  17, 2, Color.BlackWhite, Color.WhiteGreen, "START GAME");    
+            printButton(Position.minX + 28, Position.bufferY - 17, 2, Color.BlackWhite, Color.WhiteGreen, "START GAME");    
         }
         else if(button[0] && shart && (GetAsyncKeyState(VK_LBUTTON) & 0x8000)){
             cout<<Color.Reset;
             system("cls");
             Game();
+        }
+
+        //Leaderboard
+        shart = Position.mouseY <= Position.bufferY - 12 && Position.mouseY >= Position.bufferY - 14 && Position.mouseX >= Position.minX + 26 && Position.mouseX <= Position.minX + 40;
+        if(!button[1] && shart){
+            button[1] = 1;
+            printButton(Position.minX + 28, Position.bufferY - 13, 1, Color.WhiteBrown, Color.ChocoGreen, "LEADERBOARDS");    
+        }
+        else if(button[1] && !shart){
+            button[1] = 0;
+            printButton(Position.minX + 28, Position.bufferY - 13, 1, Color.BlackWhite, Color.WhiteGreen, "LEADERBOARDS");    
+        }
+        else if(button[1] && shart && (GetAsyncKeyState(VK_LBUTTON) & 0x8000)){
+            // cout<<Color.Reset;
+            // system("cls");
+            // Game();
+        }
+
+        //SETTINGS
+        shart = Position.mouseY <= Position.bufferY - 8 && Position.mouseY >= Position.bufferY - 10 && Position.mouseX >= Position.minX + 26 && Position.mouseX <= Position.minX + 40;
+        if(!button[2] && shart){
+            button[2] = 1;
+            printButton(Position.minX + 28, Position.bufferY - 9, 3, Color.WhiteBrown, Color.ChocoGreen, "SETTINGS");    
+        }
+        else if(button[2] && !shart){
+            button[2] = 0;
+            printButton(Position.minX + 28, Position.bufferY - 9, 3, Color.BlackWhite, Color.WhiteGreen, "SETTINGS");    
+        }
+        else if(button[2] && shart && (GetAsyncKeyState(VK_LBUTTON) & 0x8000)){
+            // cout<<Color.Reset;
+            // system("cls");
+            // Game();
         }
 
         //EXIT
