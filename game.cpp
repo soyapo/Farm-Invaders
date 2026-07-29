@@ -97,17 +97,21 @@ struct Heros{//character maps
         {{" ", Color.Reset}, {" ", Color.Reset}, {" ", Color.Reset}, {" ", Color.Reset}, {" ", Color.Reset}}
     };
 } Heros;
+const int MAXROWS = 5; //vertical cap on the enemy formation
 struct Enemy{
     int X, Y, Dir, XP;
-    pair <int, int> Grid[300][200];
-    int Exist[8];
+    int Rows;                       //how many rows the current wave has
+    pair <int, int> Grid[300][200]; //collision map: {alive, rowCol id = r*8 + c}
+    int Exist[MAXROWS][8];          //per-enemy: 1 alive, <0 dying, 0 gone
 };
 struct GameStateT{ //live gameplay state
     int score;
     int lives;
-    int alive;   //enemies still shootable
-    bool over;   //player lost
-    bool won;    //player cleared the wave
+    int alive;      //enemies still shootable in this wave
+    int wave;       //1-based wave counter
+    int waveTotal;  //enemies this wave started with (for pacing)
+    bool over;      //player lost
+    bool won;       //unused now that waves are endless; kept for EndScreen
 } GameState;
 struct MissileT{ //enemy bombs raining down
     static const int MAX = 6;
@@ -132,6 +136,8 @@ bool DamageBarrier(int x, int y);
 void SpawnMissile();
 void UpdateMissiles();
 void HeroHit();
+void SetupWave();
+void WaveCleared();
 void EndScreen(bool won);
 
 string SN(string s, int n);
@@ -201,29 +207,39 @@ void Game(){
             Position.lastBulletMove = clock();
         }
 
-        //---enemy formation (speeds up as its ranks thin out)---
-        int rabbitInterval = 200 + GameState.alive * 90;
+        //---enemy formation: pace scales with the fraction left + the wave---
+        int maxI = 700 - GameState.wave * 40; if(maxI < 250) maxI = 250;
+        int minI = 120;
+        double frac = GameState.waveTotal > 0 ? (double)GameState.alive / GameState.waveTotal : 0.0;
+        int rabbitInterval = minI + (int)((maxI - minI) * frac);
         if(clock() - Position.lastRabbitMove >= rabbitInterval){
             PrintRabbit();
             Position.lastRabbitMove = clock();
-            //lose if the formation has marched down to the hero
-            if(Rabbit.Y + 3 >= Position.heroY)
+            //lose if the bottom of the formation has marched down to the hero
+            int bottom = Rabbit.Y + (Rabbit.Rows - 1) * 4 + 2;
+            if(bottom >= Position.heroY)
                 GameState.over = true;
         }
 
-        //---enemy bombs: spawn on a timer, fall on a timer---
-        if(clock() - lastSpawn >= (clock_t)(650 + GameState.alive * 60)){
+        //---enemy bombs: more frequent and faster on later waves---
+        int spawnInterval = 1000 - GameState.wave * 80; if(spawnInterval < 300) spawnInterval = 300;
+        if(clock() - lastSpawn >= (clock_t)spawnInterval){
             SpawnMissile();
             lastSpawn = clock();
         }
-        if(clock() - Position.lastMissileMove >= 55){
+        int missileInterval = 55 - GameState.wave * 3; if(missileInterval < 30) missileInterval = 30;
+        if(clock() - Position.lastMissileMove >= missileInterval){
             UpdateMissiles();
             Position.lastMissileMove = clock();
         }
 
-        //---win when the wave is cleared---
-        if(GameState.alive <= 0)
-            GameState.won = true;
+        //---wave cleared -> escalate to the next, larger wave (endless)---
+        if(GameState.alive <= 0){
+            WaveCleared();
+            Position.lastRabbitMove  = clock() - 5000; //draw the new wave immediately
+            lastSpawn                = clock();
+            Position.lastMissileMove = clock();
+        }
 
         gotoxy(Position.heroX, Position.heroY); //park the cursor off the sprites
         Sleep(3); //hand time back to the OS instead of burning a full core
@@ -263,28 +279,48 @@ void InitGame(){
 
     Position.heroX   = Position.minX + 31, Position.heroY = Position.bufferY - 7;
     Position.bulletX = 0 , Position.bulletY = 0, Position.isBullet = 0;
-    //initial position of the leftmost rabbit, directed to move east.
-    //Y starts at 2 so the score/lives HUD gets row 0-1 to itself.
-    Rabbit.X = Position.minX, Rabbit.Y = 2, Rabbit.Dir = 1;
 
-    for(int i = 0; i < 8; i++){
-        Rabbit.Exist[i] = 1;
-        for(int x = 7 * i; x < 7 * i + 5; x++)
-            for(int y = Rabbit.Y; y < Rabbit.Y + 3; y++)
-                Rabbit.Grid[x + Rabbit.X][y].first = 1,
-                Rabbit.Grid[x + Rabbit.X][y].second = i;
-    }
-
-    //reset live gameplay state for a fresh wave
-    GameState.score = 0, GameState.lives = 3, GameState.alive = 8;
+    //reset live gameplay state for a fresh game
+    GameState.score = 0, GameState.lives = 3, GameState.wave = 1;
     GameState.over  = false, GameState.won = false;
     for(int i = 0; i < Missiles.MAX; i++)
         Missiles.active[i] = false;
+
+    SetupWave(); //build the first wave's formation + collision grid
 
     PrintDecor();
     InitBarrier();
     PrintHero(Heros.Hero, 6, 7, Position.heroX, Position.heroY, 0);
     DrawHUD();
+}
+void SetupWave(){
+    //Wave 1 has 2 rows; each subsequent wave adds one, capped at MAXROWS and
+    //by however many rows actually fit above the barriers on this console.
+    int wanted = 1 + GameState.wave;
+    int fit    = (Position.bufferY - 13 - 2) / 4; //space between HUD and barriers
+    if(fit < 1) fit = 1;
+    Rabbit.Rows = min(min(wanted, MAXROWS), fit);
+    //start the block at the top-left of the play field, marching east
+    Rabbit.X = Position.minX, Rabbit.Y = 2, Rabbit.Dir = 1;
+
+    //clear the collision grid across the whole play area first
+    for(int gx = Position.minX; gx < Position.minX + 71 && gx < 300; gx++)
+        for(int gy = 0; gy < Position.bufferY && gy < 200; gy++)
+            Rabbit.Grid[gx][gy].first = 0, Rabbit.Grid[gx][gy].second = 0;
+
+    GameState.alive = 0;
+    for(int r = 0; r < Rabbit.Rows; r++){
+        int by = Rabbit.Y + r * 4; //3-tall sprites, 1-row gap => stride 4
+        for(int c = 0; c < 8; c++){
+            Rabbit.Exist[r][c] = 1;
+            GameState.alive++;
+            for(int cx = 7 * c; cx < 7 * c + 5; cx++)
+                for(int ry = by; ry < by + 3; ry++)
+                    Rabbit.Grid[cx + Rabbit.X][ry].first  = 1,
+                    Rabbit.Grid[cx + Rabbit.X][ry].second = r * 8 + c;
+        }
+    }
+    GameState.waveTotal = GameState.alive;
 }
 void InitBarrier(){
     srand(time(0));
@@ -516,65 +552,70 @@ void PrintHero(const pair<string, string> (&Hero)[Rows][Cols], int row, int col,
     gotoxy(Position.maxX, Position.bufferY - 2, " ");
 }
 void PrintRabbit(){
-    //zeroing previous cells
-    for(int i = Rabbit.Y; i < Rabbit.Y + 3; i++){
-        if(Rabbit.Dir > 0)
-            for(int x = 0, j = Rabbit.X; x < 8; x++, j += 7)
-                Rabbit.Grid[j][i].first = 0,
-                Rabbit.Grid[j][i].second = 0;
-        else
-            for(int x = 0, j = Rabbit.X + 53; x < 8; x++, j -= 7)
-                Rabbit.Grid[j][i].first = 0,
-                Rabbit.Grid[j][i].second = 0;
-    }
+    const int stride = 4;                              //3 sprite rows + 1 gap
+    int blockH = (Rabbit.Rows - 1) * stride + 3;       //full height of the block
 
-    //direction inversion
-    if((Rabbit.Dir == 1 && Rabbit.X == Position.minX + 15) || (Rabbit.Dir == -1 && Rabbit.X == Position.minX)){
-        for(int i = Rabbit.Y; i < Rabbit.Y + 2; i++){
-            gotoxy(Position.minX, i);
+    //---(A) clear the collision grid over the block's whole footprint (plus a
+    //one-cell margin for the impending step), so no stale "ghost" cells survive
+    //a horizontal move or a descent and cause phantom hits---
+    for(int ry = Rabbit.Y; ry <= Rabbit.Y + blockH && ry < 200; ry++)
+        for(int rx = Rabbit.X - 1; rx <= Rabbit.X + 54 && rx < 300; rx++)
+            if(rx >= 0 && ry >= 0)
+                Rabbit.Grid[rx][ry].first = 0, Rabbit.Grid[rx][ry].second = 0;
+
+    //---(B) bounce at the edges: wipe the whole block box, drop a row, reverse---
+    if((Rabbit.Dir == 1 && Rabbit.X == Position.minX + 15) ||
+       (Rabbit.Dir == -1 && Rabbit.X == Position.minX)){
+        for(int rr = Rabbit.Y; rr < Rabbit.Y + blockH; rr++){
+            gotoxy(Position.minX, rr);
             for(int j = 0; j < 70; j++)
-                cout<<' ';
+                cout << ' ';
         }
         Rabbit.Y++, Rabbit.Dir *= -1;
     }
 
     Rabbit.X += Rabbit.Dir;
 
-    //turning new cell to 1
-    for(int i = 0; i < 8; i++){
-        for(int x = 7 * i; x < 7 * i + 5; x++){
-            for(int y = Rabbit.Y; y < Rabbit.Y + 3; y++){
-                Rabbit.Grid[x + Rabbit.X][y].second = i;
-                if(Rabbit.Exist[i] == 1)
-                    Rabbit.Grid[x + Rabbit.X][y].first = 1;
+    //---(C) mark the collision grid at the new position---
+    for(int r = 0; r < Rabbit.Rows; r++){
+        int by = Rabbit.Y + r * stride;
+        for(int c = 0; c < 8; c++)
+            for(int cx = 7 * c; cx < 7 * c + 5; cx++)
+                for(int ry = by; ry < by + 3; ry++){
+                    Rabbit.Grid[cx + Rabbit.X][ry].second = r * 8 + c;
+                    Rabbit.Grid[cx + Rabbit.X][ry].first  = (Rabbit.Exist[r][c] == 1);
+                }
+    }
+
+    //---(D) draw every band---
+    for(int r = 0; r < Rabbit.Rows; r++){
+        int by = Rabbit.Y + r * stride;
+        int f  = (Rabbit.X + r) % 2; //stagger the walk cycle between rows
+        for(int c = 0, x = Rabbit.X; c < 8; c++, x += 7){
+            for(int j = 0, y = by; j < 3; j++){
+                gotoxy(x, y++);
+
+                if(Rabbit.Exist[r][c] == 1)
+                    for(int k = 0; k < 5; k++)
+                        cout << Heros.Rabbit[f][j][k].second << Heros.Rabbit[f][j][k].first;
+                else if(Rabbit.Exist[r][c] < 0){
+                    Rabbit.Exist[r][c]--;
+                    for(int k = 0; k < 5; k++)
+                        cout << Heros.Rabbit[2][j][k].second << Heros.Rabbit[2][j][k].first;
+                }
+                else
+                    for(int k = 0; k < 5; k++)
+                        cout << Heros.Empty[j][k].second << Heros.Empty[j][k].first;
+
+                //erase the trailing column for this row only (stay inside the band)
+                gotoxy(x + (Rabbit.Dir > 0 ? -1 : 5), by + j, " ");
+
+                if(Rabbit.Exist[r][c] == -3)
+                    Rabbit.Exist[r][c] = 0;
             }
         }
     }
-
-    //printing the new cells
-    for(int i = 0, x = Rabbit.X; i < 8; i++, x += 7){
-        for(int j = 0, y = Rabbit.Y; j < 3; j++){
-            gotoxy(x, y++);
-
-            if(Rabbit.Exist[i] == 1)
-                for(int k = 0; k < 5; k++)
-                    cout<<Heros.Rabbit[Rabbit.X % 2][j][k].second<<Heros.Rabbit[Rabbit.X % 2][j][k].first;
-            else if(Rabbit.Exist[i] < 0){
-                Rabbit.Exist[i]--;
-                for(int k = 0; k < 5; k++)
-                    cout<<Heros.Rabbit[2][j][k].second<<Heros.Rabbit[2][j][k].first;
-            }
-            else
-                for(int k = 0; k < 5; k++)
-                    cout<<Heros.Empty[j][k].second<<Heros.Empty[j][k].first;
-            
-            for(int k = 0; k < 5; k++)    
-                    gotoxy(x + (Rabbit.Dir > 0 ? -1 : 5), Rabbit.Y + k, " ");
-
-            if(Rabbit.Exist[i] == -3)
-                Rabbit.Exist[i] = 0;
-        }
-    }
+    cout << Color.Reset;
 }
 void PrintBullet(int &x, int &y){
     //clear the trail cell the bullet just vacated (it travels upward)
@@ -588,20 +629,22 @@ void PrintBullet(int &x, int &y){
 
     //enemy hit sequence
     else if(Rabbit.Grid[x][y].first == 1){
-        int col  = Rabbit.Grid[x][y].second;      //capture before we zero the grid
-        int left = Rabbit.X + 7 * col;
-        Rabbit.Exist[col] = -1, Position.isBullet = 0; //start the death animation
+        int id   = Rabbit.Grid[x][y].second;      //capture before we zero the grid
+        int r    = id / 8, c = id % 8;            //decode row + column
+        int left = Rabbit.X + 7 * c;
+        int top  = Rabbit.Y + r * 4;
+        Rabbit.Exist[r][c] = -1, Position.isBullet = 0; //start the death animation
         GameState.alive--;
-        GameState.score += 100;
+        GameState.score += 100 + (Rabbit.Rows - 1 - r) * 20; //back rows worth more
         DrawHUD();
-        //zero this column's collision cells so it can't be hit twice
-        for(int j = Rabbit.Y; j < Rabbit.Y + 3; j++)
+        //zero this enemy's collision cells so it can't be hit twice
+        for(int j = top; j < top + 3; j++)
             for(int i = left; i < left + 5; i++)
                 Rabbit.Grid[i][j].first = 0;
         //print the explosion sprite across ALL three rows (was a one-row bug:
         //the inner loop variable y never advanced, so only the top row drew)
         for(int j = 0; j < 3; j++){
-            gotoxy(left, Rabbit.Y + j);
+            gotoxy(left, top + j);
             for(int k = 0; k < 5; k++)
                 cout<<Heros.Rabbit[2][j][k].second<<Heros.Rabbit[2][j][k].first;
         }
@@ -639,6 +682,8 @@ void DrawHUD(){
     while(s.size() < 5) s = "0" + s;
     gotoxy(Position.minX, 0, Color.Yellow + "SCORE " + Color.White + s);
 
+    gotoxy(Position.minX + 32, 0, Color.Orange + "WAVE " + Color.White + to_string(GameState.wave) + " ");
+
     string lives = Color.Green + "LIVES " + Color.Yellow;
     for(int i = 0; i < GameState.lives; i++)
         lives += Block.Full;
@@ -661,11 +706,11 @@ bool DamageBarrier(int x, int y){
     return false;
 }
 void SpawnMissile(){
-    //a random living enemy column drops a bomb, if a missile slot is free
+    //a random column that still has an enemy drops a bomb from its lowest one
     int cols[8], n = 0;
-    for(int i = 0; i < 8; i++)
-        if(Rabbit.Exist[i] == 1)
-            cols[n++] = i;
+    for(int c = 0; c < 8; c++)
+        for(int r = 0; r < Rabbit.Rows; r++)
+            if(Rabbit.Exist[r][c] == 1){ cols[n++] = c; break; }
     if(n == 0)
         return;
     int slot = -1;
@@ -673,9 +718,13 @@ void SpawnMissile(){
         if(!Missiles.active[i]){ slot = i; break; }
     if(slot < 0)
         return;
-    int col = cols[rand() % n];
-    Missiles.x[slot] = Rabbit.X + 7 * col + 2; //centre of the 5-wide sprite
-    Missiles.y[slot] = Rabbit.Y + 3;           //just below the formation
+    int c = cols[rand() % n];
+    int lowest = 0; //deepest living row in that column
+    for(int r = 0; r < Rabbit.Rows; r++)
+        if(Rabbit.Exist[r][c] == 1)
+            lowest = r;
+    Missiles.x[slot] = Rabbit.X + 7 * c + 2;      //centre of the 5-wide sprite
+    Missiles.y[slot] = Rabbit.Y + lowest * 4 + 3; //just below that enemy
     Missiles.active[slot] = true;
 }
 void UpdateMissiles(){
@@ -716,6 +765,32 @@ void HeroHit(){
     PrintHero(Heros.Hero, 6, 7, Position.heroX, Position.heroY, 0);
     if(GameState.lives <= 0)
         GameState.over = true;
+}
+void WaveCleared(){
+    //wave bonus + a short banner, then build the next, larger wave
+    GameState.score += 200;
+    GameState.wave++;
+
+    CS GreenWhite = "\033[38;2;92;172;45;48;2;255;255;255m";
+    string msg = " WAVE " + to_string(GameState.wave) + " ";
+    int bx = Position.minX + (70 - (int)msg.size()) / 2, by = Position.bufferY / 2 - 1;
+    gotoxy(bx, by, GreenWhite + msg);
+    cout << Color.Reset;
+    Sleep(1100);
+
+    //wipe the enemy zone (HUD on row 0 stays) and any bombs in flight
+    for(int rr = 1; rr < Position.bufferY - 13; rr++){
+        gotoxy(Position.minX, rr);
+        for(int j = 0; j < 70; j++)
+            cout << ' ';
+    }
+    for(int i = 0; i < Missiles.MAX; i++)
+        Missiles.active[i] = false;
+
+    SetupWave();
+    InitBarrier(); //fresh cover each wave to offset the rising difficulty
+    DrawHUD();
+    PrintHero(Heros.Hero, 6, 7, Position.heroX, Position.heroY, 0); //redraw over the banner
 }
 void EndScreen(bool won){
     Sleep(350); //let the final explosion/flash settle
