@@ -1,4 +1,3 @@
-#define _WIN32_WINNT 0x0501 //expose GetCurrentConsoleFont on older MinGW headers
 #include <iostream>
 #include <string>
 #include <conio.h>
@@ -8,10 +7,6 @@
 #ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING //not in MinGW 6.3's wincon.h
 #define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
 #endif
-//MinGW 6.3 ships the CONSOLE_FONT_INFO struct but forgets to declare this
-//function, even though it lives in kernel32. Declare it ourselves.
-extern "C" __declspec(dllimport) BOOL WINAPI
-GetCurrentConsoleFont(HANDLE, BOOL, PCONSOLE_FONT_INFO);
 using namespace std; //for cin and cout mainly
 typedef const string CS; //to avoid long repetitions
 
@@ -461,22 +456,35 @@ string SN(string s, int n){
 }
 void getMousePos(int &x, int &y){
     //Convert the OS cursor position into console cell coordinates.
-    //The old version computed the real character size and then threw it away,
-    //using hard-coded /10 and /18 magic numbers, which only matched one font.
+    //Instead of trusting a font-size API (dwFontSize is unreliable and ignores
+    //display scaling), derive the cell size straight from the client rectangle
+    //divided by the number of visible cells. Both the cursor and the client
+    //rect live in the same pixel space, so this is DPI-correct by construction.
     POINT p;
     GetCursorPos(&p);
-    HWND consoleWindow = GetConsoleWindow();
-    ScreenToClient(consoleWindow, &p); //client coords exclude the title bar/borders
+    HWND hwnd = GetConsoleWindow();
+    ScreenToClient(hwnd, &p); //pixels relative to the client top-left
 
-    HANDLE consoleOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-    int charWidth = 8, charHeight = 16; //sane fallback if the query fails
-    CONSOLE_FONT_INFO cfi;
-    if(GetCurrentConsoleFont(consoleOutput, FALSE, &cfi) && cfi.dwFontSize.X > 0 && cfi.dwFontSize.Y > 0){
-        charWidth  = cfi.dwFontSize.X;
-        charHeight = cfi.dwFontSize.Y;
-    }
-    x = p.x / charWidth;
-    y = p.y / charHeight;
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    GetConsoleScreenBufferInfo(hOut, &csbi);
+
+    int cols = csbi.srWindow.Right  - csbi.srWindow.Left + 1; //visible columns
+    int rows = csbi.srWindow.Bottom - csbi.srWindow.Top  + 1; //visible rows
+    int clientW = rc.right  - rc.left;
+    int clientH = rc.bottom - rc.top;
+
+    int cw = (cols > 0 && clientW > 0) ? clientW / cols : 8;  //cell width  (px)
+    int ch = (rows > 0 && clientH > 0) ? clientH / rows : 16; //cell height (px)
+    if(cw <= 0) cw = 8;
+    if(ch <= 0) ch = 16;
+
+    //add the scroll offset so we land in absolute buffer coords (what gotoxy uses)
+    x = p.x / cw + csbi.srWindow.Left;
+    y = p.y / ch + csbi.srWindow.Top;
+
     // Clamp the values to the console buffer dimensions
     x = max(0, min(x, Position.bufferX));
     y = max(0, min(y, Position.bufferY + 3));
